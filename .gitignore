@@ -1,0 +1,21 @@
+# Virtuelle Umgebung / IDE
+.venv/
+.idea/
+
+# Python-Caches
+__pycache__/
+*.py[cod]
+
+# Große Quelldaten (83 GB) — nie ins Repo
+data/src/
+
+# Lauf-Ergebnisse
+data/results/
+
+# Test-Split — STRIKT off-limits
+data/qa/secqa_test_test.jsonl
+
+# Lose Root-Dateien / sonstige Daten (nicht gewünscht)
+data/gold_docs.txt
+PROMPT_OPTION_B.md
+fehler_train
