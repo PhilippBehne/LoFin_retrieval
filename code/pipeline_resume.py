@@ -114,7 +114,7 @@ def check_config_drift(output_dir, prefix, config, force=False):
 
     # Soft keys: warn only.
     for key in ("model", "temperature", "top_pages", "fact_batch_size",
-                "use_colbert", "embedding_model"):
+                "use_colbert", "embedding_model", "prune_docs"):
         if key in stored and stored[key] != config.get(key):
             flag = "--" + key.replace("_", "-")
             print(f"  WARNING: {flag}={config.get(key)!r} differs from original "
@@ -218,6 +218,14 @@ def main():
                         help="Max pages per fact extraction LLM call")
     parser.add_argument("--no-colbert", action="store_true",
                         help="Skip ColBERT (saves memory)")
+    parser.add_argument("--pot", action=argparse.BooleanOptionalAction, default=None,
+                        help="Program-of-Thought compute step. Default: inherit the "
+                             "original run's setting; pass --pot/--no-pot to override "
+                             "(a mismatch warns about mixed configs).")
+    parser.add_argument("--prune-docs", action=argparse.BooleanOptionalAction, default=False,
+                        help="Collapse FY-only targets spanning two consecutive years to the "
+                             "newest 10-K. Must match the original run (drift check warns "
+                             "for runs that stored it in _summary.json).")
     parser.add_argument("--no-retry-errors", action="store_true",
                         help="Treat previously-errored questions as done "
                              "(default: re-process them)")
@@ -235,6 +243,23 @@ def main():
             f"No resumable run found for prefix '{prefix}' in {output_dir} "
             f"(neither _results.jsonl nor _progress.jsonl present)"
         )
+
+    # PoT setting: _summary.json's config block does not record `pot` (compute_summary
+    # is intentionally left untouched), so derive the original run's setting from its
+    # recheck lines — a non-null `pot` field means PoT was on. A resume must continue
+    # the original run unchanged, or mixing PoT on/off silently contaminates the A/B.
+    recheck_lines = read_jsonl_safe(output_dir / f"{prefix}_recheck.jsonl")
+    original_pot = (any(rl.get("pot") is not None for rl in recheck_lines)
+                    if recheck_lines else None)
+    if args.pot is None:
+        # No explicit --pot/--no-pot: inherit the original run. Fall back to ON (the
+        # pipeline default) only if the original setting can't be determined.
+        args.pot = original_pot if original_pot is not None else True
+        print(f"  PoT: inheriting original run setting "
+              f"({'ON' if args.pot else 'OFF'})")
+    elif original_pot is not None and original_pot != args.pot:
+        print(f"  WARNING: --pot={args.pot} differs from the original run "
+              f"(pot={'ON' if original_pot else 'OFF'}) — output will mix configs")
 
     config = build_config_from_args(args)
     check_config_drift(output_dir, prefix, config, force=args.force)

@@ -5,14 +5,19 @@ Reads S1 query planner results, retrieves pages per target (4-way RRF),
 extracts facts via LLM, then generates a final answer from combined facts.
 
 Usage:
-    python code/pipeline.py --s1-results data/results/s1_eval_20260603_224526.jsonl --split train
+    python code/pipeline.py --s1-results data/results/s1_eval_20260613_173341.jsonl --split train
     python pipeline.py --s1-results data/results/s1_eval_xxx.jsonl --split test --n 10
     python pipeline.py --s1-results ... --qids openqa_183 openqa_124
     python pipeline.py --s1-results ... --no-colbert
+
+    # PoT (Program-of-Thought) now runs by DEFAULT. Use --no-pot for the frozen baseline (A/B):
+    python code/pipeline.py --s1-results data/results/s1_eval_20260603_224526.jsonl --split train --no-pot
 """
 
 import argparse
+import ast
 import json
+import operator
 import os
 import pickle
 import re
@@ -136,6 +141,78 @@ Use ONLY the extracted facts provided below. Do NOT add information not present 
 - Keep monetary values in their original units unless conversion is needed for comparison
 - Do NOT show your work or calculations — just give the final answer
 - Be concise: match the style and detail level the question expects"""
+
+
+# Appended to the answer system prompt ONLY when PoT supplies computed values, so the
+# --pot-off path keeps the baseline system prompt byte-for-byte identical (clean A/B).
+COMPUTED_VALUES_HINT = """
+
+## Computed values (block below) — rules:
+- Use these exact numbers; do NOT recompute them.
+- Answer in the FORM the question asks for: if it asks for a percentage, share, ratio, \
+growth rate, or contribution, the computed percentage/ratio IS the answer. Never convert \
+it back into absolute amounts and never list the raw operands instead of the computed \
+result. Include the % sign or unit with every value.
+- Multi-entity / multi-period questions: report EVERY asked entity and EVERY asked period \
+as its own labeled value, even if values repeat. Do not merge entities or periods into \
+one number unless the question explicitly asks for a single combined figure. Do not add \
+values, periods, or totals that were not asked for.
+- BUT if the question DOES ask for a total / sum / combined / cumulative figure (over years, \
+quarters, or entities), you MUST state the injected total explicitly as its own labeled value, \
+in addition to any per-period values asked for. Omitting the requested total is a wrong answer.
+- "How did X change" / trend questions: state BOTH endpoint values (e.g. "from 5.2% in 2021 to \
+2.5% in 2024"), not only the delta between them.
+- Do NOT answer "INSUFFICIENT DATA" when computed values are supplied below or the requested \
+metric's values are present in the facts: give the best supported answer from them, even if \
+some periods or entities are missing.
+- "How much higher/lower" / "percentage difference" comparisons: state the magnitude as \
+a positive number with a direction word (e.g. "4.74% lower"), not as a signed number."""
+
+
+COMPUTE_PROMPT = """\
+ROLE: You set up arithmetic. You do NOT execute it and you do NOT write prose.
+
+Read the question and the extracted facts. Identify every numeric quantity the final answer must \
+COMPUTE — percentage change, growth, CAGR, margin, ratio, difference, sum. For each, output a \
+named arithmetic expression a calculator can evaluate.
+
+## Output — strict JSON object, nothing else:
+{"snake_case_name": "<arithmetic expression>", ...}
+
+Rules for each expression:
+- ONLY numbers and the operators + - * / ** ( ) and abs(). No variable names, no words, no units, \
+no % signs, no commas inside numbers (write 3846 not 3,846).
+- Substitute the actual numbers from the facts directly into the expression.
+- Do NOT round inside the expression — full precision is kept by the calculator.
+- One entry per quantity the answer needs. If the answer needs NO calculation (every value can be \
+read off directly), output exactly {}.
+
+## Standard formulas:
+- percentage change: (new - old) / abs(old) * 100
+- percentage difference / how much higher or lower A is than B: (A - B) / abs(B) * 100, \
+where A = the entity or value named FIRST in the question (the sign encodes the direction)
+- CAGR over n years:  (end / start) ** (1/n) * 100 - 100
+- margin / share:     part / whole * 100
+- debt-to-equity:     total liabilities / total equity
+- difference:         a - b
+
+## Choosing the right numbers (most errors are HERE, not in the arithmetic):
+- PERIOD: use exactly the periods the question names. "2024 vs 2022" -> use 2024 and 2022, \
+not an adjacent year.
+- SCOPE: prefer the consolidated / company-wide TOTAL line item. Use a segment or sub-total \
+ONLY when the question explicitly names that segment.
+- DISAMBIGUATION: when several facts share a metric name but differ in value, pick the one whose \
+label and scope match the question most directly (e.g. company-wide "Total liabilities", \
+not a partial subtotal).
+- LABEL MATCH: use the line item whose wording matches the question; for a named segment use that \
+segment's reported total, not one sub-line.
+- This is selection guidance, NOT a restriction: still use any fact you need — just pick the \
+RIGHT one when several compete.
+
+## Example
+Question: By what percent did revenue grow from 7575 (2022) to 8000 (2023)?
+Facts: ... [Co] revenue | 2022 | 7575 ... [Co] revenue | 2023 | 8000 ...
+Output: {"revenue_pct_change_2022_2023": "(8000 - 7575) / abs(7575) * 100"}"""
 
 
 # ── Document Store ──────────────────────────────────────────
@@ -409,7 +486,12 @@ def llm_call(system, user, temperature=None, model=None, think=None):
         json=body,
         timeout=600,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # raise_for_status() would discard the response body — keep it, it carries
+        # the real reason behind e.g. an HTTP 400 at the n_ctx limit
+        raise requests.HTTPError(
+            f"HTTP {resp.status_code} from LM Studio: {resp.text[:500]}", response=resp
+        )
     data = resp.json()
     choice = data["choices"][0]
     raw = (choice["message"].get("content") or "").strip()
@@ -446,8 +528,12 @@ def extract_facts(question, needed_info, pages, temperature=None, model=None):
 
 
 def generate_answer(question, all_facts_by_target, task_type, aggregation,
-                    temperature=None, model=None):
-    """Call LLM to generate final answer from combined extracted facts."""
+                    temperature=None, model=None, computed_values=None):
+    """Call LLM to generate final answer from combined extracted facts.
+
+    When PoT is on, `computed_values` (name -> exact float) is appended as a
+    block so the model substitutes the pre-computed numbers instead of doing
+    the arithmetic itself."""
     facts_parts = []
     for entry in all_facts_by_target:
         target = entry["target"]
@@ -464,10 +550,126 @@ def generate_answer(question, all_facts_by_target, task_type, aggregation,
         f"Aggregation: {aggregation}\n\n"
         f"{facts_str}"
     )
+    system_prompt = ANSWER_GENERATION_PROMPT
+    if computed_values:
+        lines = "\n".join(f"- {k} = {v}" for k, v in computed_values.items())
+        user_prompt += (
+            f"\n\nComputed values (exact — use these, do NOT recompute):\n{lines}"
+        )
+        # Steer the model only when values are actually present; with PoT off the
+        # system prompt stays byte-for-byte the baseline (keeps the A/B clean).
+        system_prompt = ANSWER_GENERATION_PROMPT + COMPUTED_VALUES_HINT
 
-    result = llm_call(ANSWER_GENERATION_PROMPT, user_prompt,
+    result = llm_call(system_prompt, user_prompt,
                        temperature=temperature, model=model, think=True)
-    return result["content"], user_prompt, result
+    return result["content"], system_prompt, user_prompt, result
+
+
+# ── Program-of-Thought (PoT) ────────────────────────────────
+
+_BINOPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+           ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod}
+_UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def _eval_node(node):
+    if (isinstance(node, ast.Constant) and isinstance(node.value, (int, float))
+            and not isinstance(node.value, bool)):     # bool is an int subclass — reject it
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        left, right = _eval_node(node.left), _eval_node(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > 1000:
+            raise ValueError("exponent out of range")  # block int-tower CPU/memory blowups
+        return _BINOPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY:
+        return _UNARY[type(node.op)](_eval_node(node.operand))
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "abs" and len(node.args) == 1 and not node.keywords):
+        return abs(_eval_node(node.args[0]))          # abs() is the ONLY allowed function
+    raise ValueError(f"disallowed: {type(node).__name__}")
+
+
+def safe_eval(expr):
+    """Eval an arithmetic string (+ - * / ** %, unary +/-, abs(), parens).
+    Returns float, or None if invalid/forbidden/division-by-zero."""
+    try:
+        return float(_eval_node(ast.parse(expr, mode="eval").body))
+    except (ValueError, SyntaxError, ZeroDivisionError, TypeError, OverflowError):
+        return None
+
+
+def _balanced_object(text, start):
+    """Substring of the balanced {...} beginning at index `start`, or None.
+
+    Tracks JSON string literals + escapes so braces inside string values don't
+    miscount (e.g. {"k": "a{b}c"} is captured whole)."""
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+def _parse_formulas(content):
+    """Extract a flat {name: expr} dict from the compute-call output.
+
+    Tolerant: strips ```json … ``` fences, then returns the FIRST balanced {...}
+    object that parses to a dict — so trailing prose (even with stray braces),
+    code fences, or a second object don't drop the formulas. Returns {} on any
+    failure — PoT must never crash the run. A bare {} (no calc needed) is honoured."""
+    if not content:
+        return {}
+    text = content.strip()
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = text.replace("```", "").strip()
+    idx = text.find("{")
+    while idx != -1:
+        obj_str = _balanced_object(text, idx)
+        if obj_str is not None:
+            try:
+                obj = json.loads(obj_str)
+            except (json.JSONDecodeError, ValueError):
+                obj = None
+            if isinstance(obj, dict):
+                return {str(k): v for k, v in obj.items()}
+        idx = text.find("{", idx + 1)
+    return {}
+
+
+def compute_values(question, all_facts_by_target, temperature=None, model=None):
+    """PoT step: LLM proposes named formulas, Python evaluates them safely.
+    Returns (computed_values: dict[str,float], formulas: dict[str,str], user_prompt, llm_result)."""
+    facts_parts = []
+    for entry in all_facts_by_target:
+        company = entry["target"].get("company", "Unknown")
+        docs = ", ".join(entry["docs"])
+        facts_parts.append(f"=== Facts from {company} ({docs}) ===\n{entry['facts']}")
+    user_prompt = f"Question: {question}\n\n" + "\n\n".join(facts_parts)
+
+    result = llm_call(COMPUTE_PROMPT, user_prompt, temperature=temperature,
+                      model=model, think=False)
+    formulas, computed = _parse_formulas(result["content"]), {}
+    for name, expr in formulas.items():
+        val = safe_eval(str(expr))
+        if val is not None:
+            computed[name] = round(val, 6)
+    return computed, formulas, user_prompt, result
 
 
 # ── Pipeline Orchestration ──────────────────────────────────
@@ -478,6 +680,20 @@ def match_gold_pages(evidences, resolved_docs):
         ev for ev in (evidences or [])
         if ev["doc_name"] in resolved_docs
     ]
+
+
+def prune_target_docs(target, docs):
+    """--prune-docs: collapse FY-only targets spanning two consecutive years to the
+    newest 10-K. Its comparative statements cover the prior year on every statement
+    (income/cash flow show 3 years, balance sheet 2), so the older filing is
+    redundant. Longer spans keep all years — the balance sheet's 2-year window no
+    longer covers them (measured on train: pruning 3-year spans loses gold docs)."""
+    years = [int(y) for y in (target.get("years") or [])]
+    periods = target.get("periods") or []
+    if set(periods) == {"FY"} and len(set(years)) == 2 and max(years) - min(years) == 1:
+        keep = [d for d in docs if d.endswith(f"_{max(years)}_10K")]
+        return keep or docs
+    return docs
 
 
 def compute_hits(full_ranking, gold_evidences):
@@ -528,6 +744,12 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
     retrieval_units = []
     for target, res_entry in zip(plan["targets"], resolution_log):
         resolved_docs = res_entry.get("docs", res_entry.get("matched", []))
+        if config.get("prune_docs"):
+            pruned = prune_target_docs(target, resolved_docs)
+            if len(pruned) < len(resolved_docs):
+                dropped = sorted(set(resolved_docs) - set(pruned))
+                print(f"    Target '{target.get('company', '?')}': --prune-docs dropped {dropped}")
+                resolved_docs = pruned
         if not resolved_docs:
             print(f"    Target '{target.get('company', '?')}': no matched docs, skipping")
             continue
@@ -668,12 +890,33 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
             "total_completion_tokens": total_completion_tokens,
         }
 
+    # PoT (optional): a small compute call sets up named formulas, Python evaluates
+    # them exactly, and the exact results are handed to the answer call as a block.
+    computed_values, pot_detail = {}, None
+    if config.get("pot"):
+        computed_values, formulas, compute_user, compute_res = compute_values(
+            question, all_facts,
+            temperature=config["temperature"], model=config["model"],
+        )
+        total_prompt_tokens += compute_res["prompt_tokens"]
+        total_completion_tokens += compute_res["completion_tokens"]
+        pot_detail = {
+            "computed_values": computed_values,
+            "formulas": formulas,
+            "compute_prompt_user": compute_user,
+            "raw": compute_res["content"],
+            "finish_reason": compute_res["finish_reason"],
+            "prompt_tokens": compute_res["prompt_tokens"],
+            "completion_tokens": compute_res["completion_tokens"],
+        }
+
     # LLM answer generation (all facts combined)
-    answer, answer_user_prompt, answer_llm_result = generate_answer(
+    answer, answer_system_prompt, answer_user_prompt, answer_llm_result = generate_answer(
         question, all_facts,
         plan.get("task_type", "lookup"),
         plan.get("aggregation", "none"),
         temperature=config["temperature"], model=config["model"],
+        computed_values=computed_values,
     )
     total_prompt_tokens += answer_llm_result["prompt_tokens"]
     total_completion_tokens += answer_llm_result["completion_tokens"]
@@ -698,10 +941,11 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
         "retrieved_pages": all_retrieved,
         "targets_detail": targets_detail,
         "retrieval_targets": retrieval_targets,
-        "answer_prompt_system": ANSWER_GENERATION_PROMPT,
+        "answer_prompt_system": answer_system_prompt,
         "answer_prompt_user": answer_user_prompt,
         "answer_think": answer_llm_result["think"],
         "answer_finish_reason": answer_llm_result["finish_reason"],
+        "pot": pot_detail,
         "total_prompt_tokens": total_prompt_tokens,
         "total_completion_tokens": total_completion_tokens,
     }
@@ -774,6 +1018,7 @@ def build_recheck_line(r):
         "targets_detail": r.get("targets_detail", []),
         "answer_prompt_system": r.get("answer_prompt_system", ""),
         "answer_prompt_user": r.get("answer_prompt_user", ""),
+        "pot": r.get("pot"),
         "latency_s": r.get("latency_s", 0),
         "total_prompt_tokens": r.get("total_prompt_tokens", 0),
         "total_completion_tokens": r.get("total_completion_tokens", 0),
@@ -841,6 +1086,7 @@ def compute_summary(all_results, config):
             "fact_batch_size": config["fact_batch_size"],
             "split": config["split"],
             "use_colbert": config["use_colbert"],
+            "prune_docs": config.get("prune_docs", False),
             "s1_results": config["s1_results"],
             "embedding_model": config["embedding_model"],
         },
@@ -1084,6 +1330,8 @@ def build_config_from_args(args):
         "top_pages": args.top_pages,
         "fact_batch_size": args.fact_batch_size,
         "use_colbert": not args.no_colbert,
+        "pot": args.pot,
+        "prune_docs": args.prune_docs,
         "split": args.split,
         "s1_results": args.s1_results,
         "embedding_model": args.embedding_model,
@@ -1211,11 +1459,26 @@ def main():
                         help="Max pages per fact extraction LLM call")
     parser.add_argument("--no-colbert", action="store_true", help="Skip ColBERT (saves memory)")
     parser.add_argument("--no-save", action="store_true")
+    parser.add_argument("--pot", action=argparse.BooleanOptionalAction, default=True,
+                        help="Program-of-Thought compute step before answering "
+                             "(default: ON; use --no-pot for the frozen baseline / A/B path)")
+    parser.add_argument("--prune-docs", action=argparse.BooleanOptionalAction, default=False,
+                        help="Collapse FY-only targets spanning two consecutive years to the "
+                             "newest 10-K (its comparative statements cover the prior year). "
+                             "Default: OFF (baseline behaviour).")
+    parser.add_argument("--qids-file",
+                        help="File with one qid per line (# comments and blank lines ignored)")
     args = parser.parse_args()
 
     config = build_config_from_args(args)
     s1_records, qa_data = load_inputs(args.s1_results, SPLIT_CONFIG[args.split])
-    common_qids = compute_common_qids(s1_records, qa_data, args.qids, args.start, args.n)
+
+    qids = list(args.qids or [])
+    if args.qids_file:
+        with open(args.qids_file, encoding="utf-8") as f:
+            qids += [ln.split("#", 1)[0].strip() for ln in f
+                     if ln.split("#", 1)[0].strip()]
+    common_qids = compute_common_qids(s1_records, qa_data, qids or None, args.start, args.n)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_pipeline(config, s1_records, qa_data, common_qids,

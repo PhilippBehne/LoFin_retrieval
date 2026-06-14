@@ -4,7 +4,7 @@ Single-file pipeline: config, entity resolution, LLM planner, evaluation.
 
 Usage:
 
-    python eval_s1.py --file data/secqa_test_test.jsonl     # custom file
+    python code/eval_s1.py --file data/secqa_test_train.jsonl     # custom file
     python eval_s1.py --n 20                                # first 20
     python eval_s1.py --start 50 --n 10
     python eval_s1.py --errors                                 # only 4 known error cases
@@ -243,7 +243,7 @@ Output ONLY a single valid JSON object.  No markdown fences, no explanation text
 
 ## Field Reference
 - **company**: Exact company name from the question (or the well-known name for the company).
-- **years**: All fiscal years whose documents may be needed (list of integers).
+- **years**: The fiscal years whose filings you will search — the **minimal** set per the Year Rules below (list of integers).
 - **periods**: Which periods to search inside each year.
   - `"FY"` = full fiscal year → 10-K annual filing.
   - `"Q1"`, `"Q2"`, `"Q3"` = fiscal quarter → 10-Q quarterly filing.
@@ -271,11 +271,31 @@ Output ONLY a single valid JSON object.  No markdown fences, no explanation text
 → Some companies (e.g. HP, Nike, Microsoft) have non-calendar fiscal years.
 → Use the fiscal year as stated in the question.  If the question says "FY2025 Q1", output year=2025, period="Q1".
 
+**Rule 5 — Different years need different periods → one target per year**
+→ A target's years × periods expand as a full cross-product: EVERY listed period is fetched for EVERY listed year.
+→ If the question needs different periods in different years (e.g. Q3 of FY2024 but Q1 of FY2025), do NOT merge them into one target — the cross-product would fetch documents nobody asked for (2024 Q1, 2025 Q3, 2025 FY).
+→ Output one target per year instead, each listing only that year's needed periods (same company, same semantic_query).
+
 ## Year Rules
 - "in 2023" or "for 2023" → `[2023]`.
-- "over the last N years as of YEAR" / "from YEAR1 to YEAR2" → include **all** years in the range `[YEAR1, …, YEAR2]`, not just endpoints.  Some questions need each individual year's filing.
-- For growth / CAGR that only needs endpoints, still include all intermediate years — the retrieval stage will filter.
-- 10-K filings contain 2-3 years of comparative data, but always include all years to be safe.
+- A 10-K prints **comparative prior-year columns** on the same page as the current year: the income
+  statement and the cash-flow statement show **3 fiscal years** (filing year + 2 prior); the balance
+  sheet shows **2 fiscal years** (filing year + 1 prior).
+- For a **FY-only** question spanning several consecutive fiscal years, list the **smallest set of
+  10-Ks whose comparative columns already cover every requested year** — do NOT emit one 10-K per year
+  out of caution. Start at the newest requested year and step backwards by the comparative window:
+  - income / cash-flow metrics (revenue, net income, operating income, margins, free cash flow,
+    operating/investing/financing cash flow): step **3** → an FY2020-2024 revenue trend = years
+    `[2024, 2021]` (2024 covers 2024/2023/2022, 2021 covers 2021/2020), NOT all five.
+  - balance-sheet metrics (total assets, total liabilities, equity, cash, debt, inventory): step **2**
+    → an FY2020-2024 total-assets trend = years `[2024, 2022, 2020]`.
+- **If you are unsure the metric appears in a comparative column** (segment breakdowns, unusual or
+  restated line items), list that fiscal year's own 10-K to be safe — recall matters more than a
+  perfectly minimal list.
+- This minimisation applies to **FY / 10-K** targets only. Quarterly (10-Q) targets keep exactly the
+  periods required by the Critical Period Rules above.
+- Always name the full requested year range in `needed_info` (e.g. "annual revenue for FY2020-2024")
+  so extraction reads every comparative column from the chosen filings.
 
 ## Multi-Company Questions
 - "Among A, B, and C …" → create one target per company, all with the same semantic_query / needed_info.
@@ -299,9 +319,9 @@ Q: "What was Costco's total revenue in the third quarter of fiscal year 2024?"
 Q: "What is the percentage difference of Netflix's operating income compared to that of Walt Disney in 2024?"
 {"targets":[{"company":"Netflix","years":[2024],"periods":["FY"],"semantic_query":"operating income consolidated statements of operations income from operations","needed_info":"operating income"},{"company":"Walt Disney","years":[2024],"periods":["FY"],"semantic_query":"operating income consolidated statements of operations income from operations","needed_info":"operating income"}],"task_type":"compare_companies","aggregation":"diff"}
 
-### Multi-year trend (all years)
+### Multi-year trend (minimal filings via comparative columns)
 Q: "As of 2024, what is the overall free cash flow trend of Procter & Gamble over the recent 5-year period?"
-{"targets":[{"company":"Procter & Gamble","years":[2020,2021,2022,2023,2024],"periods":["FY"],"semantic_query":"free cash flow operating cash flow capital expenditures consolidated statements of cash flows","needed_info":"annual free cash flow"}],"task_type":"trend","aggregation":"none"}
+{"targets":[{"company":"Procter & Gamble","years":[2024,2021],"periods":["FY"],"semantic_query":"free cash flow operating cash flow capital expenditures consolidated statements of cash flows","needed_info":"annual free cash flow for fiscal years 2020 through 2024"}],"task_type":"trend","aggregation":"none"}
 
 ### Three-company superlative
 Q: "Among Intel, AMD, and Qualcomm, what is the operating income of the company that has the highest R&D in 2023?"
@@ -315,13 +335,21 @@ Q: "In which quarter of 2023 did Ford report the highest net income?"
 Q: "What was Starbucks' revenue in Q4 of fiscal year 2023?"
 {"targets":[{"company":"Starbucks","years":[2023],"periods":["Q3","FY"],"semantic_query":"total net revenues consolidated statements of earnings quarterly revenue","needed_info":"Q4 revenue"}],"task_type":"lookup","aggregation":"none"}
 
+### Mixed periods across years (Rule 5)
+Q: "What was Nike's revenue in Q4 of fiscal 2023 and in Q1 of fiscal 2024?"
+{"targets":[{"company":"Nike","years":[2023],"periods":["Q3","FY"],"semantic_query":"total revenues consolidated statements of income quarterly revenue","needed_info":"Q4 FY2023 revenue"},{"company":"Nike","years":[2024],"periods":["Q1"],"semantic_query":"total revenues consolidated statements of income quarterly revenue","needed_info":"Q1 FY2024 revenue"}],"task_type":"lookup","aggregation":"none"}
+
 ### Nine months cumulative (Rule 3)
 Q: "What was Tesla's net income for the first nine months of 2024?"
 {"targets":[{"company":"Tesla","years":[2024],"periods":["Q3"],"semantic_query":"net income nine months ended consolidated statements of operations","needed_info":"cumulative net income for nine months ended"}],"task_type":"lookup","aggregation":"none"}
 
-### Multi-year growth (endpoints + intermediates)
+### Multi-year growth (minimal filings)
 Q: "What is Amazon's overall revenue growth over the last 4-year period as of 2024?"
-{"targets":[{"company":"Amazon","years":[2021,2022,2023,2024],"periods":["FY"],"semantic_query":"total net sales revenue consolidated statements of operations","needed_info":"annual total revenue"}],"task_type":"trend","aggregation":"growth"}
+{"targets":[{"company":"Amazon","years":[2024,2021],"periods":["FY"],"semantic_query":"total net sales revenue consolidated statements of operations","needed_info":"annual total revenue for fiscal years 2021 through 2024"}],"task_type":"trend","aggregation":"growth"}
+
+### Multi-year balance-sheet trend (2-year comparative window → step 2)
+Q: "How did Microsoft's total assets change across fiscal years 2021 to 2024?"
+{"targets":[{"company":"Microsoft","years":[2024,2022],"periods":["FY"],"semantic_query":"total assets consolidated balance sheets","needed_info":"total assets for fiscal years 2021 through 2024"}],"task_type":"trend","aggregation":"none"}
 """
 
 

@@ -4,7 +4,7 @@ Evaluates RAG pipeline results by comparing predicted answers against gold answe
 using an LLM judge. Always runs on all results since answers are typically sentences.
 
 Usage:
-    python code/run_judge.py --results data/results/rag_20260604_181012_results.jsonl
+    python code/run_judge.py --results data/results/rag_20260613_213203_results.jsonl
     python run_judge.py --results ... --model qwen/qwq-32b
     python run_judge.py --results ... --concurrency 2
     python run_judge.py --results ... --n 10
@@ -228,12 +228,28 @@ def main():
     if args.n is not None:
         records = records[:args.n]
 
-    # Skip records with errors (no predicted answer)
-    judgeable = [r for r in records if r.get("predicted_answer")
-                 and r["predicted_answer"] != "INSUFFICIENT DATA"
-                 and not r.get("error")]
-    skipped = len(records) - len(judgeable)
-    print(f"  {len(judgeable)} to judge, {skipped} skipped (errors/no answer)")
+    # Classify skips. Crash / INSUFFICIENT / empty are all end-to-end WRONG answers; they
+    # are not sent to the judge but MUST stay in the end-to-end denominator (n_total_records),
+    # otherwise accuracy = correct/n_judged "wanders" with the skip count (see TODO.md).
+    def _is_insufficient(pa):
+        # normalize: trailing punctuation / case / whitespace ("INSUFFICIENT DATA." == "insufficient data")
+        return (pa or "").strip().rstrip(".").strip().casefold() == "insufficient data"
+
+    judgeable = []
+    n_crash = n_insuff = n_empty = 0
+    for r in records:
+        pa = r.get("predicted_answer")
+        if r.get("error"):
+            n_crash += 1
+        elif not pa:
+            n_empty += 1
+        elif _is_insufficient(pa):
+            n_insuff += 1
+        else:
+            judgeable.append(r)
+    skipped = n_crash + n_insuff + n_empty
+    print(f"  {len(judgeable)} to judge, {skipped} skipped "
+          f"(crash={n_crash}, insufficient={n_insuff}, empty={n_empty})")
 
     # Judge
     judged_results = []
@@ -283,8 +299,13 @@ def main():
     n_incorrect = sum(1 for r in judged_results if r["judge_verdict"] == "incorrect")
     n_errors = sum(1 for r in judged_results if r["judge_verdict"] == "error")
 
-    def rate(count):
+    n_total = len(records)
+
+    def rate(count):  # judged-denominator rate (legacy; do NOT compare across runs)
         return round(count / n_judged, 4) if n_judged else 0
+
+    def rate_e2e(count):  # end-to-end rate over all records (comparable across runs)
+        return round(count / n_total, 4) if n_total else 0
 
     summary = {
         "config": {
@@ -294,15 +315,22 @@ def main():
             "results_file": str(results_path),
             "timestamp": datetime.now().isoformat(),
         },
-        "n_total_records": len(records),
+        "n_total_records": n_total,
         "n_skipped": skipped,
+        "n_skipped_crash": n_crash,
+        "n_skipped_insufficient": n_insuff,
+        "n_skipped_empty": n_empty,
         "n_judged": n_judged,
         "correct": {"count": n_correct, "rate": rate(n_correct)},
         "partially_correct": {"count": n_partial, "rate": rate(n_partial)},
         "incorrect": {"count": n_incorrect, "rate": rate(n_incorrect)},
         "judge_errors": {"count": n_errors, "rate": rate(n_errors)},
+        # judged-denominator (wanders with skip count — for within-run inspection only)
         "accuracy": rate(n_correct),
         "accuracy_with_partial": rate(n_correct + n_partial),
+        # end-to-end over ALL records (skips counted as wrong) — use THESE to compare runs
+        "accuracy_end_to_end": rate_e2e(n_correct),
+        "accuracy_end_to_end_with_partial": rate_e2e(n_correct + n_partial),
     }
 
     # Save
@@ -332,8 +360,11 @@ def main():
     print(f"  Incorrect:         {n_incorrect:>4}/{n_judged}  ({rate(n_incorrect)*100:5.1f}%)")
     print(f"  Judge errors:      {n_errors:>4}/{n_judged}  ({rate(n_errors)*100:5.1f}%)")
     print(f"{'─' * 60}")
-    print(f"  Accuracy:              {rate(n_correct)*100:5.1f}%")
-    print(f"  Accuracy (w/ partial): {rate(n_correct + n_partial)*100:5.1f}%")
+    print(f"  Skipped (wrong): {skipped:>3}  (crash={n_crash}, insuff={n_insuff}, empty={n_empty})")
+    print(f"  Accuracy (judged denom, n={n_judged}):  {rate(n_correct)*100:5.1f}%  "
+          f"(w/ partial {rate(n_correct + n_partial)*100:5.1f}%)")
+    print(f"  Accuracy END-TO-END (n={n_total}):       {rate_e2e(n_correct)*100:5.1f}%  "
+          f"(w/ partial {rate_e2e(n_correct + n_partial)*100:5.1f}%)   <- compare runs on THIS")
     print(f"{'=' * 60}")
     print(f"\n  Judged:  {judged_path}")
     print(f"  Summary: {summary_path}")
