@@ -4,7 +4,7 @@ Evaluates RAG pipeline results by comparing predicted answers against gold answe
 using an LLM judge. Always runs on all results since answers are typically sentences.
 
 Usage:
-    python code/run_judge.py --results data/results/rag_20260613_213203_results.jsonl
+    python code/run_judge.py --results data/results/rag_20260616_121808_results.jsonl
     python run_judge.py --results ... --model qwen/qwq-32b
     python run_judge.py --results ... --concurrency 2
     python run_judge.py --results ... --n 10

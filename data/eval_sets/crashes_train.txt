@@ -1,0 +1,14 @@
+# Crash-Set (train) — 10 Fragen, die in der Baseline rag_20260606_020413 abgestürzt sind.
+# Quelle: data/results/debug/analysis_history.md, Teil 2 Befund 5 (9x HTTP 400, 1x "no facts").
+# Schwere Multi-Year-Fragen (Input >= ~17.9k Token, sprengt n_ctx).
+# NICHT Teil des PoT-Tests — nur dokumentiert fuer den spaeteren, separaten Crash-Fix (Hebel 2).
+openqa_5
+openqa_19
+openqa_25
+openqa_26
+openqa_28
+openqa_73
+openqa_75
+openqa_112
+openqa_119
+openqa_191

@@ -1,0 +1,90 @@
+﻿[
+    {
+        "qid":  "openqa_10",
+        "question":  "As of 2024, what is the overall free cash flow trend of Procter \u0026 Gamble over the recent 5-year period?",
+        "predicted":  "2020: 14,873 million USD\n2021: 15,809 million USD\n2023: 14,011 million USD\n2024: 16,946 million USD",
+        "gold":  "From 2020 to 2024, Procter \u0026 Gamble\u0027s free cash flow fluctuated but showed an overall upward trend, increasing from $11,895 million in 2020 to $16,524 million in 2024, with values of $14,330 million in 2021, $13,567 million in 2022, and $13,786 million in 2023.",
+        "gold2":  null,
+        "evidences":  "PG_2024_10K#p40; PG_2023_10K#p39; PG_2022_10K#p42; PG_2021_10K#p43; PG_2020_10K#p42"
+    },
+    {
+        "qid":  "openqa_27",
+        "question":  "Among JPMorgan Chase and Bank of America, what is the net cash provided by operating activities in 2023 of the company that has the highest net income in millions?",
+        "predicted":  "12974",
+        "gold":  "129174",
+        "gold2":  "129,174 millions",
+        "evidences":  "BAC_2023_10K#p94; JPM_2023_10K#p169"
+    },
+    {
+        "qid":  "openqa_73",
+        "question":  "What Operating Profit Margin is reported by Costco in the first quarter of fiscal year 2024, and how does it rank compared to Target and Walmart?",
+        "predicted":  "Costco Operating Profit Margin (Q1 2024): 3.43%\nWalmart Operating Profit Margin (Q1 2024): 4.1%\nTarget Operating Profit Margin (Q1 2024): 5.3%\n\nCostco\u0027s operating profit margin of 3.43% is the lowest among the three companies.",
+        "gold":  "Costco\u0027s operating profit margin in the first quarter of fiscal year 2024 is 3.35%, ranking it second highest compared to Target (3.53%) and Walmart (3.34%).",
+        "gold2":  null,
+        "evidences":  "WMT_2023_10K#p53; COST_2023_10K#p34; TGT_2023_10K#p37"
+    },
+    {
+        "qid":  "openqa_133",
+        "question":  "Between CBOE and CME Group, which company had a higher adjusted EBITDA margin in 2024, and by what percentage did it exceed the other?",
+        "predicted":  "CME Group 69.63% had a higher adjusted EBITDA margin in 2024. It exceeded CBOE\u0027s margin by 6.79%.",
+        "gold":  "In 2024, CME Group had a higher adjusted EBITDA margin of 107.9%, exceeding CBOEâ€™s 65.2% by approximately 65.4%.",
+        "gold2":  null,
+        "evidences":  "CBOE_2024_10K#p59; CME_2024_10K#p51"
+    },
+    {
+        "qid":  "openqa_156",
+        "question":  "What was the revenue contribution of the Merchant Solutions segment in 2023 prior to the Worldpay sale, and how did FIS\u0027s segment structure change after the divestiture?",
+        "predicted":  "The revenue contribution of the Merchant Solutions segment in 2023 was 33.10%. After the divestiture, FIS no longer reports the Merchant Solutions segment and instead reports its financial performance based on the Banking Solutions, Capital Market Solutions, and Corporate and Other segments.",
+        "gold":  "In 2023, Merchant Solutions contributed approximately $4,651 million in revenue. After the sale, FIS removed the segment and reorganized into Financial and Corporate segments only.",
+        "gold2":  null,
+        "evidences":  "FIS_2022_10K#p5; FIS_2021_10K#p5"
+    },
+    {
+        "qid":  "openqa_189",
+        "question":  "How did Eli Lilly\u0027s U.S. revenue change across each quarter of 2024?",
+        "predicted":  "Q1 2024: 5,694.4 million USD\nQ2 2024: 7,835.2 million USD\nQ3 2024: 7,813.6 million USD\nQ4 2024: 9,032.0 million USD",
+        "gold":  "Q1 2024: $5,694.4 million,Q2 2024: $7,835.2 million,Q3 2024: $7,813.6 million,Q4 2024: $10,014.0 million",
+        "gold2":  null,
+        "evidences":  "LLY_2024Q1_10Q#p11; LLY_2024Q2_10Q#p12; LLY_2024Q3_10Q#p12; LLY_2024_10K#p48"
+    },
+    {
+        "qid":  "openqa_199",
+        "question":  "Compare Micron\u0027s DRAM and NAND revenues in Q2 2025 to Q1 2025.",
+        "predicted":  "DRAM Revenue Q1 2025: 6,400 million USD\nDRAM Revenue Q2 2025: 6,123 million USD\nNAND Revenue Q1 2025: 2,241 million USD\nNAND Revenue Q2 2025: 1,855 million USD",
+        "gold":  "DRAM increased from $6,123 million to $6,400 million, NAND increased from $1,855 million to $2,241 million.",
+        "gold2":  null,
+        "evidences":  "MU_2025Q2_10Q#p24; MU_2025Q1_10Q#p21"
+    },
+    {
+        "qid":  "openqa_221",
+        "question":  "According to the 2024 consolidated statements of operations, how did Oracle\u0027s cloud services and license support revenue compare to Salesforce\u0027s subscription and support revenue?",
+        "predicted":  "In 2024, Oracle\u0027s cloud services and license support revenue was 39,383 million USD, which was 6,846 million USD or 21.04% higher than Salesforce\u0027s subscription and support revenue of 32,537 million USD.",
+        "gold":  "Oracle earned $41,976 million and Salesforce earned $34,607 million, so Oracle earned $7,369 million more.",
+        "gold2":  null,
+        "evidences":  "ORCL_2024_10K#p67; CRM_2024_10K#p62"
+    },
+    {
+        "qid":  "openqa_229",
+        "question":  "In the 2024 10-K report, how did the total segment revenues of The Walt Disney Company and Warner Bros. Discovery compare?",
+        "predicted":  "In 2024, The Walt Disney Company had total segment revenues of 91,361 million USD and Warner Bros. Discovery had total revenues of 39,321 million USD, meaning The Walt Disney Company\u0027s revenues were 52,040 million USD or 132.35% higher than those of Warner Bros. Discovery.",
+        "gold":  "The Walt Disney Company reported $91,361 million, while Warner Bros. Discovery reported $11,607 million.",
+        "gold2":  null,
+        "evidences":  "WBD_2024_10K#p38; DIS_2024_10K#p80"
+    },
+    {
+        "qid":  "openqa_269",
+        "question":  "What is the percentage difference in operating income between 2024 and 2022 for Cisco Systems, based on the statements of operations?",
+        "predicted":  "12.80% lower",
+        "gold":  "Operating income decreased from $15,031 million in 2023 to $12,181 million in 2024, a decrease of approximately 18.96%.",
+        "gold2":  null,
+        "evidences":  "CSCO_2024_10K#p60; CSCO_2022_10K#p61"
+    },
+    {
+        "qid":  "openqa_316",
+        "question":  "What was the quarter-over-quarter growth rate of eBay\u0027s U.S. net revenue in each quarter of 2023?",
+        "predicted":  "Q1 2023: 2.52%\nQ2 2023: 0.32%\nQ3 2023: -0.47%\nQ4 2023: 2.30%",
+        "gold":  "U.S. net revenue grew 3% in Q1, 6% in Q2, 6% in Q3, and 6% in Q4 2023.",
+        "gold2":  null,
+        "evidences":  "EBAY_2023Q1_10Q#p44; EBAY_2023Q2_10Q#p46; EBAY_2023Q3_10Q#p46; EBAY_2023_10K#p40"
+    }
+]

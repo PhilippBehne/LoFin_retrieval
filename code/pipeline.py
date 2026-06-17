@@ -54,6 +54,13 @@ LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
 LLM_MODEL = "google/gemma-4-31b"
 TEMPERATURE = 0.1
 LLM_MAX_TOKENS = 16000
+# Per-step reasoning effort (sent as `reasoning_effort`; valid: none/minimal/low/
+# medium/high/xhigh — `off`/`on` raise HTTP 400). The old `think` bool was a no-op:
+# LM Studio ignores it. On gemma-4-31b reasoning is binary — `none`=off, any other
+# value=on (no real gradation) — so "high" here just reads as "thinking on".
+REASONING_FACT = "none"      # extract_facts: mechanical, saves speed + n_ctx
+REASONING_COMPUTE = "high"   # compute_values: operand/formula choice needs reasoning
+REASONING_ANSWER = "high"    # generate_answer: answer phrasing
 TOP_PAGES = 10
 TOP_K_CHUNKS = 25
 RRF_K = 60
@@ -98,6 +105,65 @@ too many than to miss one.
 - For change/trend questions: extract values for ALL relevant periods.
 - For multi-entity pages: label each fact with the correct entity — do not mix entities.
 - Prefer raw table values over rounded numbers from prose text.
+
+## FORBIDDEN in your output:
+- "Wait", "Let me re-read", "Actually", "Hmm", "Let me check again"
+- Discussion of table layout, OCR, column alignment
+- Any "Self-Correction" section
+- Any text before "FACTS:"
+- Any explanation after the FACTS: block
+
+## Example:
+Question: What percentage of Fictional Bank's total assets were held as loans in 2020?
+Context: "As of December 31, 2020, Fictional Bank reported total assets of $12.4 billion. \
+The loan portfolio stood at $8.2 billion, while investment securities totaled $3.1 billion."
+
+FACTS:
+- quote: "total assets of $12.4 billion" -> [Fictional Bank] Total assets | 2020 | \
+12.4 billion USD | source: prose
+- quote: "loan portfolio stood at $8.2 billion" -> [Fictional Bank] Loan portfolio | 2020 | \
+8.2 billion USD | source: prose"""
+
+
+# Stricter A/B variant of the fact extractor (--strict-facts, default OFF). Removes the three
+# over-extraction commands of the default prompt ("extract generously, duplicates okay", "EVERY
+# number / better one too many", "extract BOTH table and prose") to cut answer-prompt noise, while
+# KEEPING the operand-protecting rules (all periods for trend questions, total/subtotal for portion
+# questions) so CALC operands are not dropped. Tested only on the 46 wrong qids of run 024904 first.
+FACT_EXTRACTION_PROMPT_STRICT = """\
+ROLE: You are a text scanner. You are NOT a reasoner.
+Your job: read each page once and list the figures and facts RELEVANT to answering the question. \
+Skip data that is clearly unrelated to the question. Do not pad the list.
+
+## Output format — exactly this, nothing else:
+
+FACTS:
+- quote: "<verbatim snippet from the page>" -> [Entity] metric | period | value unit | source: table/prose
+- quote: "<verbatim snippet from the page>" -> [Entity] metric | period | value unit | source: table/prose
+
+## Field rules:
+- quote: copy a short verbatim snippet (5-20 words) from the page that contains the data. \
+Must be an exact substring of the input.
+- Entity: the company, segment, fund, or counterparty the data belongs to. \
+Use the entity name as it appears in the document.
+- metric: the line item, KPI, program name, or descriptive label \
+(e.g. "Total revenue", "Net income", "Employee training programs").
+- period: the fiscal year, quarter, or date the data refers to \
+(e.g. "2020", "Q3 2019", "Dec 31 2020"). If not determinable, write "n/a".
+- value unit: the numeric value with unit, or a descriptive value for qualitative facts \
+(e.g. "12.4 billion USD", "START Program, Apprenticeships, Internships").
+- source: "table" if from a structured table row/column, \
+"prose" if from running text or a narrative sentence.
+
+## Extraction rules:
+- Extract the values, metrics, names, or facts that bear on the question — NOT every number on the page.
+- No duplicates: if the SAME figure appears both in a table and in prose, extract it ONCE \
+(prefer the raw table value over the rounded prose number).
+- For financial data: extract the relevant raw values, percentages, totals, and subtotals.
+- For qualitative questions: extract the program names, descriptions, lists, or categories asked about.
+- For portion/percentage questions: you MUST also extract the relevant total or subtotal.
+- For change/trend questions: extract values for ALL relevant periods (every year/quarter in scope).
+- For multi-entity pages: label each fact with the correct entity — do not mix entities.
 
 ## FORBIDDEN in your output:
 - "Wait", "Let me re-read", "Actually", "Hmm", "Let me check again"
@@ -468,8 +534,14 @@ def retrieve_pages(doc_store, embed_model, semantic_query, resolved_docs,
 
 # ── LLM Calls ──────────────────────────────────────────────
 
-def llm_call(system, user, temperature=None, model=None, think=None):
-    """Single LLM call via LM Studio. Returns raw content string."""
+def llm_call(system, user, temperature=None, model=None, reasoning=None):
+    """Single LLM call via LM Studio. Returns raw content string.
+
+    `reasoning` -> the `reasoning_effort` request field (none/high; see config block).
+    Replaces the old `think` bool, which LM Studio silently ignored. Reasoning text
+    arrives in `message.reasoning_content` (NOT a <think> tag); we surface it in the
+    `think` field, falling back to a literal <think> block if a model ever emits one.
+    """
     body = {
         "model": model or LLM_MODEL,
         "messages": [
@@ -479,8 +551,8 @@ def llm_call(system, user, temperature=None, model=None, think=None):
         "temperature": temperature if temperature is not None else TEMPERATURE,
         "max_tokens": LLM_MAX_TOKENS,
     }
-    if think is not None:
-        body["think"] = think
+    if reasoning is not None:
+        body["reasoning_effort"] = reasoning
     resp = requests.post(
         LM_STUDIO_URL,
         json=body,
@@ -494,19 +566,23 @@ def llm_call(system, user, temperature=None, model=None, think=None):
         )
     data = resp.json()
     choice = data["choices"][0]
-    raw = (choice["message"].get("content") or "").strip()
+    message = choice["message"]
+    raw = (message.get("content") or "").strip()
     usage = data.get("usage", {})
+    details = usage.get("completion_tokens_details") or {}
     return {
         "content": strip_think(raw),
         "raw": raw,
-        "think": extract_think(raw),
+        "think": message.get("reasoning_content") or extract_think(raw),
+        "reasoning_tokens": details.get("reasoning_tokens", 0),
         "finish_reason": choice.get("finish_reason"),
         "prompt_tokens": usage.get("prompt_tokens", 0),
         "completion_tokens": usage.get("completion_tokens", 0),
     }
 
 
-def extract_facts(question, needed_info, pages, temperature=None, model=None):
+def extract_facts(question, needed_info, pages, temperature=None, model=None,
+                  prompt=FACT_EXTRACTION_PROMPT):
     """Call LLM to extract facts from retrieved pages."""
     context_parts = []
     for p in pages:
@@ -522,8 +598,8 @@ def extract_facts(question, needed_info, pages, temperature=None, model=None):
         f"FACTS:"
     )
 
-    result = llm_call(FACT_EXTRACTION_PROMPT, user_prompt,
-                       temperature=temperature, model=model, think=False)
+    result = llm_call(prompt, user_prompt,
+                       temperature=temperature, model=model, reasoning=REASONING_FACT)
     return result["content"], user_prompt, result
 
 
@@ -561,7 +637,7 @@ def generate_answer(question, all_facts_by_target, task_type, aggregation,
         system_prompt = ANSWER_GENERATION_PROMPT + COMPUTED_VALUES_HINT
 
     result = llm_call(system_prompt, user_prompt,
-                       temperature=temperature, model=model, think=True)
+                       temperature=temperature, model=model, reasoning=REASONING_ANSWER)
     return result["content"], system_prompt, user_prompt, result
 
 
@@ -663,7 +739,7 @@ def compute_values(question, all_facts_by_target, temperature=None, model=None):
     user_prompt = f"Question: {question}\n\n" + "\n\n".join(facts_parts)
 
     result = llm_call(COMPUTE_PROMPT, user_prompt, temperature=temperature,
-                      model=model, think=False)
+                      model=model, reasoning=REASONING_COMPUTE)
     formulas, computed = _parse_formulas(result["content"]), {}
     for name, expr in formulas.items():
         val = safe_eval(str(expr))
@@ -829,10 +905,13 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
         batch_prompt_tokens = 0
         batch_completion_tokens = 0
 
+        fact_prompt = (FACT_EXTRACTION_PROMPT_STRICT if config.get("strict_facts")
+                       else FACT_EXTRACTION_PROMPT)
         for batch_idx, batch_pages in enumerate(page_batches):
             facts_text, fact_user_prompt, fact_llm_result = extract_facts(
                 question, target.get("needed_info", ""), batch_pages,
                 temperature=config["temperature"], model=config["model"],
+                prompt=fact_prompt,
             )
             fact_batch_results.append({
                 "batch_idx": batch_idx,
@@ -843,6 +922,7 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
                 "finish_reason": fact_llm_result["finish_reason"],
                 "prompt_tokens": fact_llm_result["prompt_tokens"],
                 "completion_tokens": fact_llm_result["completion_tokens"],
+                "reasoning_tokens": fact_llm_result["reasoning_tokens"],
             })
             combined_facts_parts.append(facts_text)
             batch_prompt_tokens += fact_llm_result["prompt_tokens"]
@@ -866,7 +946,7 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
                  "text": p["text"], "score": p["score"]}
                 for p in pages
             ],
-            "fact_prompt_system": FACT_EXTRACTION_PROMPT,
+            "fact_prompt_system": fact_prompt,
             "extracted_facts": combined_facts,
             "fact_batches": fact_batch_results,
         })
@@ -908,6 +988,7 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
             "finish_reason": compute_res["finish_reason"],
             "prompt_tokens": compute_res["prompt_tokens"],
             "completion_tokens": compute_res["completion_tokens"],
+            "reasoning_tokens": compute_res["reasoning_tokens"],
         }
 
     # LLM answer generation (all facts combined)
@@ -944,6 +1025,7 @@ def process_question(s1_record, qa_entry, doc_store, embed_model, config):
         "answer_prompt_system": answer_system_prompt,
         "answer_prompt_user": answer_user_prompt,
         "answer_think": answer_llm_result["think"],
+        "answer_reasoning_tokens": answer_llm_result["reasoning_tokens"],
         "answer_finish_reason": answer_llm_result["finish_reason"],
         "pot": pot_detail,
         "total_prompt_tokens": total_prompt_tokens,
@@ -1332,6 +1414,7 @@ def build_config_from_args(args):
         "use_colbert": not args.no_colbert,
         "pot": args.pot,
         "prune_docs": args.prune_docs,
+        "strict_facts": args.strict_facts,
         "split": args.split,
         "s1_results": args.s1_results,
         "embedding_model": args.embedding_model,
@@ -1462,6 +1545,8 @@ def main():
     parser.add_argument("--pot", action=argparse.BooleanOptionalAction, default=True,
                         help="Program-of-Thought compute step before answering "
                              "(default: ON; use --no-pot for the frozen baseline / A/B path)")
+    parser.add_argument("--strict-facts", action=argparse.BooleanOptionalAction, default=False,
+                        help="Use the stricter fact-extraction prompt (A/B; default OFF = baseline)")
     parser.add_argument("--prune-docs", action=argparse.BooleanOptionalAction, default=False,
                         help="Collapse FY-only targets spanning two consecutive years to the "
                              "newest 10-K (its comparative statements cover the prior year). "

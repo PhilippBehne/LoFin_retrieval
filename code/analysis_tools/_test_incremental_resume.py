@@ -13,7 +13,7 @@ import pipeline_resume as R
 
 CONFIG = {
     "model": "m", "temperature": 0.1, "top_pages": 10, "fact_batch_size": 5,
-    "split": "train", "use_colbert": True,
+    "split": "train", "use_colbert": True, "prune_docs": False,
     "s1_results": "data/results/s1.jsonl", "embedding_model": "BAAI/bge-m3",
 }
 

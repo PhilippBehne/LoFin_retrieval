@@ -12,6 +12,9 @@ data/src/
 # Lauf-Ergebnisse
 data/results/
 
+# Archiv (aufgeräumte Alt-Läufe, Analysen & Wegwerf-Skripte) — lokal only, nie ins Repo
+archive/
+
 # Test-Split — STRIKT off-limits
 data/qa/secqa_test_test.jsonl
 

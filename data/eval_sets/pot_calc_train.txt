@@ -1,0 +1,43 @@
+# PoT-Testset (train) — 38 CALC-Fragen, die in der Baseline rag_20260606_020413 falsch waren.
+# Quelle: data/results/debug/analysis_history.md, Teil 2
+#   Befund 3 (28 Rechenfehler, Retrieval war OK) + Befund 6 (10x INSUFFICIENT trotz vorhandener Facts).
+# Alle sind CALC-Fragen (%-Diff, CAGR, Marge, Ratio, Differenz) — genau das Profil, das PoT fangen soll.
+# Verwendung: python code/pipeline.py ... --pot --qids-file data/eval_sets/pot_calc_train.txt
+openqa_4
+openqa_24
+openqa_31
+openqa_35
+openqa_41
+openqa_49
+openqa_53
+openqa_66
+openqa_70
+openqa_71
+openqa_111
+openqa_116
+openqa_121
+openqa_126
+openqa_133
+openqa_136
+openqa_139
+openqa_144
+openqa_154
+openqa_160
+openqa_172
+openqa_181
+openqa_187
+openqa_189
+openqa_192
+openqa_199
+openqa_206
+openqa_215
+openqa_229
+openqa_248
+openqa_252
+openqa_269
+openqa_271
+openqa_286
+openqa_289
+openqa_290
+openqa_296
+openqa_316
